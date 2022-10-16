@@ -1,0 +1,559 @@
+#!/bin/bash
+###############################################################################
+#                                                                             #
+#                         Treiber und Firmware Finder                         #
+#          ---------------------------------------------------------          #
+#                                                                             #
+#                       (C)opyright bei Michael Gasbers                       #
+#                      MIGANO Professional Web Solutions                      #
+#                                                                             #
+#                             All rights reserved.                            #
+#                                                                             #
+###############################################################################
+#                                                                             #
+# DIESE SOFTWARE WIRD OHNE MÄNGELGEWÄHR UND OHNE JEGLICHE AUSDRÜCKLICHE ODER  #
+# STILLSCHWEIGENDE GARANTIE ZUR VERFÜGUNG GESTELLT, EINSCHLIESSLICH UND OHNE  #
+# EINSCHRÄNKUNG JEGLICHER GARANTIE FÜR DIE GEBRAUCHSTAUGLICHKEIT ODER EIGNUNG #
+# FÜR EINEN BESTIMMTEN ZWECK. ALLE RISIKEN IN BEZUG AUF ERGEBNISSE UND        #
+# LEISTUNG DIESER SOFTWARE WERDEN VOLLSTÄNDIG VOM BENUTZER ÜBERNOMMEN!        #
+#  *************************************************************************  #
+# THIS SOFTWARE IS PROVIDED "AS IS" WITH NO WARRANTIES WHAT SO EVER, WHETHER  #
+# EXPRESSED OR IMPLIED, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF       #
+# USABILITY OR FITNESS FOR A PARTICULAR PURPOSE. ALL RISKS CONCERNING RESULTS #
+# AND PERFORMANCE OF THIS SOFTWARE ARE ASSUMED COMPLETELY BY THE USER!        #
+#                                                                             #
+###############################################################################
+#                                                                             #
+#  Jegliche Form der Kopie, Veränderung und kommerziellen Verbreitung dieses  #
+#  Scripts oder Teilen davon sowie des Quellcodes ist strengstens verboten!   #
+#  *************************************************************************  #
+#   Any form of copying, modification or commercial distribution of this      #
+#   script or any part thereof or it's sourcecode is strictly prohibited!     #
+#  *************************************************************************  #
+#   Für Anregungen und Fragen nehmen Sie bitte Kontakt mit uns auf über       #
+#   https://migano.de oder per E-Mail an >> kontakt@migano.de <<. Danke.      #
+#                                                                             #
+###############################################################################
+VERSION="1.06"
+# Letzte Änderung: 02.03.2022
+###############################################################################
+
+###############################################################################
+# Benutzername, ID und Home-Verzeichnis ermitteln
+###############################################################################
+if [ $SUDO_USER ]; then MY_USER_NAME="$SUDO_USER"; else MY_USER_NAME=$(whoami); fi
+MY_USER_UID=$(id -u $MY_USER_NAME)
+if [ "$MY_USER_NAME" = "root" ];
+then
+  MY_HOME_DIR="/root"
+else
+  MY_HOME_DIR="/home/$MY_USER_NAME"
+fi
+
+# Maximale Anzahl der Einträge in der Liste der gefundenen Pakete
+MAX_ENTRIES=100
+LIST_ENTRIES=0
+
+# Weitere Parameter und Variablen
+THE_LIST_FILE="./driver_list.tmp"
+declare -A RESULT_PACKS
+declare -A RESULT_TEXTS
+declare -A RESULT_INSTS
+
+# Text normal
+black='\033[0;30m'
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+blue='\033[0;34m'
+purple='\033[0;35m'
+cyan='\033[0;36m'
+white='\033[0;97m'
+# Text hell
+dark_grey='\033[0;90m'
+light_red='\033[0;91m'
+light_green='\033[0;92m'
+light_yellow='\033[0;93m'
+light_blue='\033[0;94m'
+light_purple='\033[0;95m'
+light_cyan='\033[0;96m'
+light_grey='\033[0;37m'
+# Text fett
+bold_black='\033[1;30m'
+bold_red='\033[1;31m'
+bold_green='\033[1;32m'
+bold_yellow='\033[1;33m'
+bold_blue='\033[1;34m'
+bold_purple='\033[1;35m'
+bold_cyan='\033[1;36m'
+bold_white='\033[1;37m'
+bg_blue='\033[44m'
+colors_off='\033[0m'
+# Linienfarbe
+line_color='\033[0;90m'
+
+# --------------
+# Textbausteine
+# --------------
+FULL_LINE="${line_color}$(printf '─%.0s' {1..80})${colors_off}"
+HALF_LINE="${line_color}$(printf '─%.0s' {1..40})${colors_off}"
+FULLSPACE=$(printf '\x20%.0s' {1..80})
+
+OK_TAG="${bold_green}ok${colors_off}"
+ERROR_TAG="${bold_red}Fehler${colors_off}"
+
+###############################################################################
+# Erweiterte Funktion zur Ja/Nein-Abfrage mit optionaler Anzeige einer Datei
+# Rückgaben: 0 = false (Nein)
+#            1 = true (Ja)
+###############################################################################
+function ask_yes_or_no () {
+  QUESTION="$1? [${bold_yellow}j${colors_off}]a, [${bold_yellow}n${colors_off}]ein, [${bold_yellow}a${colors_off}]nzeigen: "
+  FILE_TO_SHOW="$2"
+  if [ "$FILE_TO_SHOW" != "" ];
+  then
+    REG_CHARS="[^JjNnAa]*"
+    echo -e -n "$QUESTION"
+  else
+    REG_CHARS="[^JjNn]*"
+    echo -e -n "$1? [${bold_yellow}j${colors_off}]a oder [${bold_yellow}n${colors_off}]ein: "
+  fi
+  IYN_RESULT=0
+  INPUT_OK=0
+  while [ $INPUT_OK -eq 0 ]
+  do
+    # Eingabe-Schleife --------------------------------------------------------
+    ANSWER=""
+    while [ "$ANSWER" = "" ];
+    do
+      read -N 1 -r -s ANSWER
+      ANSWER=$(echo $ANSWER | sed "s/$REG_CHARS//g")
+    done
+    echo -e "$ANSWER"
+    # Ja ----------------------------------------------------------------------
+    if [ "$ANSWER" = "J" ] ||
+       [ "$ANSWER" = "j" ];
+    then
+      IYN_RESULT=1
+      INPUT_OK=1
+    fi
+    # Nein --------------------------------------------------------------------
+    if [ "$ANSWER" = "N" ] ||
+       [ "$ANSWER" = "n" ];
+    then
+      INPUT_OK=1
+    fi
+    # Datei anzeigen ----------------------------------------------------------
+    if [ "$FILE_TO_SHOW" != "" ];
+    then
+      if [ "$ANSWER" = "A" ] ||
+         [ "$ANSWER" = "a" ];
+      then
+        echo -e "${light_yellow}"
+        more "$FILE_TO_SHOW"
+        echo -e "${colors_off}"
+      fi
+    fi
+    # Wenn eine Datei angezeigt wurde erneut abfragen -------------------------
+    if [ $INPUT_OK -eq 0 ];
+    then
+      if [ "$FILE_TO_SHOW" != "" ];
+      then
+        echo -e -n "$QUESTION"
+      fi
+    fi
+  done
+  return $IYN_RESULT
+}
+
+###############################################################################
+# Bereinigung des Suchbegriffs und Prüfung auf erweiterte Suchanfrage
+###############################################################################
+function clean_suchbegriff () {
+  SEARCH_ALL=0
+  # Trimmen, damit das erste Zeichen kein Leerzeichen ist und auf ! geprüft werden kann
+  SUCHBEGRIFF="$(echo $SUCHBEGRIFF | xargs)"
+  # Prüfen, ob Suche erweitert werden soll
+  if [ "${SUCHBEGRIFF:0:1}" = "!" ];
+  then
+    SUCHBEGRIFF="${SUCHBEGRIFF##*!}" # Führendes ! löschen
+    SUCHBEGRIFF="$(echo $SUCHBEGRIFF | xargs)" # Suchbegriff erneut trimmen
+    SEARCH_ALL=1
+  fi
+}
+
+###############################################################################
+# Funktion zur Erstellung einer Liste von Treiber- und Firmware-Paketen
+###############################################################################
+function create_list () {
+  show_headlines
+  echo -e " Dieses Programm führt eine Volltext-Recherche nach einem beliebigen Begriff"
+  echo -e " im Repositiory durch und filtert dabei nach passenden Treibern und Firmware"
+  echo -e " zu dem eingegebenen Begriff. Zur ungefilterten Suche nach dem Begriff (für"
+  echo -e " sämtliche Software) kann diesem ein ! (Ausrufezeichen) vorangestellt werden."
+  echo -e ""
+  while [ ${#SUCHBEGRIFF} -lt 3 ];
+  do
+    read -p " Bitte Suchbegriff eingeben (min. 3 Zeichen): " SUCHBEGRIFF
+    clean_suchbegriff
+  done
+  echo -e -n " Suche nach ${light_cyan}"
+  if [ $SEARCH_ALL -eq 1 ];
+  then
+    echo -e -n "Software"
+  else
+    echo -e -n "Firmware und Treibern"
+  fi
+  echo -e -n "${colors_off} für ${light_cyan}$SUCHBEGRIFF${colors_off}, bitte warten ... "
+  if [ $SEARCH_ALL -eq 1 ];
+  then
+    RESULTS=$(apt-cache search "$SUCHBEGRIFF" 2>/dev/null)
+  else
+    RESULTS=$(apt-cache search "$SUCHBEGRIFF" firmware 2>/dev/null)
+    RESULTS+=$(apt-cache search "$SUCHBEGRIFF" driver 2>/dev/null)
+    RESULTS+=$(apt-cache search "$SUCHBEGRIFF" treiber 2>/dev/null)
+  fi
+  echo -e "$RESULTS" > "$THE_LIST_FILE"
+  i=1
+  while read result_line
+  do
+    if [ "$result_line" != "" ];
+    then
+      PACKAGE_NAME="${result_line%% *}"
+      PACKAGE_ALREADY_IN_LIST=0
+      c=1
+      while [ $c -lt $i ];
+      do
+        if [ "${RESULT_PACKS[$c]}" = "$PACKAGE_NAME" ];
+        then
+          PACKAGE_ALREADY_IN_LIST=1
+          break
+        fi
+        ((c+=1))
+      done
+      if [ $PACKAGE_ALREADY_IN_LIST -eq 0 ];
+      then
+        RESULT_PACKS[$i]="$PACKAGE_NAME"
+        RESULT_DESC="${result_line#* }"
+        ANZ_CHARS=${#RESULT_PACKS[$i]}
+        ((ANZ_CHARS=70-ANZ_CHARS))
+        RESULT_TEXTS[$i]="${RESULT_DESC:0:$ANZ_CHARS}"
+        ((i+=1))
+      fi
+    fi
+  done < "$THE_LIST_FILE"
+  LIST_ENTRIES=$i
+  if [ $LIST_ENTRIES -eq 1 ];
+  then
+    echo -e "$ERROR_TAG"
+    read -p " Es wurde keine passende Software gefunden. Neue Suche: " SUCHBEGRIFF
+    clean_suchbegriff
+  fi
+  # SUCHBEGRIFF=""
+}
+
+###############################################################################
+# Funktion zur farblichen Hervorhebung eines Wortes in einem Text
+###############################################################################
+function highlight_text () {
+  hl_color=$'\033[1;34m'
+  no_color=$'\033[0m'
+  sed "s/$1/$hl_color$1$no_color/gi"
+}
+
+###############################################################################
+# Funktion zur Anzeige der Hardware
+###############################################################################
+function show_hardware () {
+  show_headlines
+  echo -e " ${bold_blue}Liste der gefundenen Hardware (kurz)${colors_off}"
+  echo -e "$HALF_LINE"
+  lshw -short | more
+  echo -e "$FULL_LINE"
+  echo -e " ${bold_blue}Liste der gefundenen Hardware (lang)${colors_off}"
+  echo -e "$HALF_LINE"
+  lshw | more
+  echo -e "$FULL_LINE"
+}
+
+###############################################################################
+# Funktion zur Anzeige der Kopfzeilen
+###############################################################################
+function show_headlines () {
+  printf %b '\e]10;#eeeeee\a' # Schriftfarbe (VT100) immer hell ;)
+  printf %b '\e]11;#242628\a' # Hintergrundfarbe (VT100) immer dunkel ;)
+  clear
+  HEADLINE_TEXT="${bold_white}${bg_blue}"
+  HEADLINE_TEXT+="$FULLSPACE"$'\n'
+  HEADLINE_TEXT+="                           Treiber und Firmware Finder                          "$'\n'
+  HEADLINE_TEXT+="${light_blue}${bg_blue}"
+  HEADLINE_TEXT+="                              by Michael G. | v$VERSION                             "$'\n'
+  HEADLINE_TEXT+="$FULLSPACE"
+  HEADLINE_TEXT+="${colors_off}"
+  echo -e "$HEADLINE_TEXT"
+  echo -e ""
+}
+
+###############################################################################
+# Funktion zur Anzeige der Treffer-Liste
+###############################################################################
+function show_list () {
+  z=1
+  while [ $z -lt $LIST_ENTRIES ] &&
+        [ $z -le $MAX_ENTRIES ];
+  do
+    LFD=$z
+    if [[ $LIST_ENTRIES -ge 1000 && $z -lt 1000 ]]; then LFD=" $LFD"; fi
+    if [[ $LIST_ENTRIES -ge 100 && $z -lt 100 ]]; then LFD=" $LFD"; fi
+    if [[ $LIST_ENTRIES -ge 10 && $z -lt 10 ]]; then LFD=" $LFD"; fi
+    echo -e -n " [$LFD] "
+    if [ $(dpkg-query -W -f='${Status}' "${RESULT_PACKS[$z]}" 2>/dev/null | grep -i -c -E "ok installed") -ne 0 ];
+    then
+      RESULT_INSTS[$z]="true"
+      echo -e -n "${light_green}"
+    else
+      RESULT_INSTS[$z]="false"
+      echo -e -n "${light_yellow}"
+    fi
+    echo -e "${RESULT_PACKS[$z]}${colors_off} ${RESULT_TEXTS[$z]}"
+    ((z+=1))
+  done
+  if [ $z -ge $MAX_ENTRIES ];
+  then
+    echo -e ""
+    echo -e " ${bold_red}ACHTUNG${colors_off}: Die Liste wurde auf $MAX_ENTRIES Einträge begrenzt! Versuche die Suche"
+    echo -e "          beim nächsten Mal besser zu spezifizieren ..."
+  fi
+}
+
+# =============================================================================
+# Start des Hauptteils
+# =============================================================================
+# -----------------------------------------------------------------------------
+# Zugriffsrechte prüfen
+# -----------------------------------------------------------------------------
+if [ $(id -u) -ne 0 ];
+then
+  show_headlines
+  echo -e " Bitte als Superuser aufrufen!"
+  exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Repository aktualisieren
+# -----------------------------------------------------------------------------
+show_headlines
+echo -e  -n " Aktualisiere das Repository, bitte warten ... "
+apt update &>/dev/null
+if [ $? -eq 0 ];
+then
+  echo -e "$OK_TAG"
+else
+  echo -e "$ERROR_TAG"
+fi
+
+# -----------------------------------------------------------------------------
+# lshw installieren
+# -----------------------------------------------------------------------------
+LSHW_IS_INSTALLED=1
+if [ $(dpkg-query -W -f='${Status}' lshw 2>/dev/null | grep -i -c -E "ok installed") -eq 0 ];
+then
+  apt install lshw -y &>/dev/null
+  if [ $? -ne 0 ]; then LSHW_IS_INSTALLED=0; fi
+fi
+
+# -----------------------------------------------------------------------------
+# Per Parameter mitgegebenen Suchbegriff übernehmen
+# -----------------------------------------------------------------------------
+SEARCH_ALL=0
+SUCHBEGRIFF="$1"
+clean_suchbegriff
+
+# =============================================================================
+# Äußere Schleife (wird solange durchlaufen bis Programm-Ende ausgewählt wird)
+# =============================================================================
+ACTION_FLAG="N"
+while [ "$ACTION_FLAG" != "E" ];
+do
+
+  # ---------------------------------------------------------------------------
+  # Liste von Paketen erzeugen (neue Suche)
+  # ---------------------------------------------------------------------------
+  if [ "$ACTION_FLAG" = "N" ];
+  then
+    create_list
+    if [ $LIST_ENTRIES -gt 1 ];
+    then
+      echo -e "$OK_TAG"
+      echo -e ""
+      PACKETNAME_TEXT="$SUCHBEGRIFF"
+      SUCHBEGRIFF=""
+      ACTION_FLAG="L"
+    else
+      ACTION_FLAG="N"
+    fi
+  fi
+
+  # ---------------------------------------------------------------------------
+  # Wenn Pakete gefunden wurden, die Liste dazu anzeigen
+  # ---------------------------------------------------------------------------
+  if [ "$ACTION_FLAG" = "L" ];
+  then
+    # -------------------------------------------------------------------------
+    # Liste der gefundenen Pakete anzeigen und ein Paket auswählen
+    # -------------------------------------------------------------------------
+    show_list
+    echo -e ""
+    PACKAGE_NR=$((MAX_ENTRIES+1))
+    while [ $PACKAGE_NR -ge $z ];
+    do
+      read -p " Bitte gewünschte Paketnummer eingeben (oder nur Enter für neue Suche): " PACKAGE_NR
+      PACKAGE_NR=$(echo -e $PACKAGE_NR | sed 's/[^0-9]*//g')
+      if [ "$PACKAGE_NR" = "" ]; then PACKAGE_NR=0; fi
+    done
+    # -------------------------------------------------------------------------
+    # Informationen zu einem ausgewählten Paket anzeigen ...
+    # -------------------------------------------------------------------------
+    if [ $PACKAGE_NR -gt 0 ];
+    then
+      show_headlines
+      echo -e -n " Paket $PACKAGE_NR: "
+      if [ "${RESULT_INSTS[$PACKAGE_NR]}" = "true" ];
+      then
+        echo -e -n "${light_green}"
+      else
+        echo -e -n "${light_yellow}"
+      fi
+      echo -e -n "${RESULT_PACKS[$PACKAGE_NR]}${colors_off}"
+      if [ "${RESULT_INSTS[$PACKAGE_NR]}" = "true" ];
+      then
+        echo -e " (bereits installiert)"
+      else
+        echo -e ""
+      fi
+      echo -e "$HALF_LINE"
+      apt show "${RESULT_PACKS[$PACKAGE_NR]}" 2>/dev/null | highlight_text "$PACKETNAME_TEXT"
+      echo -e "$HALF_LINE"
+    # -------------------------------------------------------------------------
+    # ... sonst (ohne Auswahl eines Paketes) mit einer neuen Suche durchstarten
+    # -------------------------------------------------------------------------
+    else
+      ACTION_FLAG="N"
+    fi
+  fi
+
+  # ---------------------------------------------------------------------------
+  # Wenn zuvor ein Paket ausgewählt wurde, dann ein Aktions-Menü dazu anzeigen
+  # und die gewünschte Aktion durchführen
+  # ---------------------------------------------------------------------------
+  if [ "$ACTION_FLAG" != "N" ];
+  then
+    # -------------------------------------------------------------------------
+    # Aktions-Menü
+    # -------------------------------------------------------------------------
+    ACTION_FLAG=""
+    setterm -cursor off 2>/dev/null
+    echo -e " Was willst Du tun?"
+    if [ "${RESULT_INSTS[$PACKAGE_NR]}" != "true" ];
+    then
+      echo -e " [${bold_yellow}I${colors_off}] Paket ${light_yellow}${RESULT_PACKS[$PACKAGE_NR]}${colors_off} installieren"
+    else
+      echo -e " [${bold_yellow}D${colors_off}] Paket ${light_yellow}${RESULT_PACKS[$PACKAGE_NR]}${colors_off} entfernen"
+    fi
+    echo -e " [${bold_yellow}L${colors_off}] Anderes Paket aus der Liste wählen"
+    echo -e " [${bold_yellow}N${colors_off}] Neue Suche starten"
+    if [ $LSHW_IS_INSTALLED -eq 1 ];
+    then
+      echo -e " [${bold_yellow}H${colors_off}] Hardware anzeigen"
+    fi
+    echo -e " [${bold_yellow}E${colors_off}] Programm beenden"
+    while [ "$ACTION_FLAG" != "I" ] &&
+          [ "$ACTION_FLAG" != "D" ] &&
+          [ "$ACTION_FLAG" != "L" ] &&
+          [ "$ACTION_FLAG" != "N" ] &&
+          [ "$ACTION_FLAG" != "H" ] &&
+          [ "$ACTION_FLAG" != "E" ];
+    do
+      read -N 1 -s ACTION_FLAG
+      ACTION_FLAG="$(echo -n "$ACTION_FLAG" | tr '[:lower:]' '[:upper:]')"
+      # Unerlaubte Eingaben unterdrücken
+      if [ "${RESULT_INSTS[$PACKAGE_NR]}" = "true" ] &&
+         [ "$ACTION_FLAG" = "I" ];
+      then
+        ACTION_FLAG=""
+      fi
+      if [ "${RESULT_INSTS[$PACKAGE_NR]}" != "true" ] &&
+         [ "$ACTION_FLAG" = "D" ];
+      then
+        ACTION_FLAG=""
+      fi
+      if [ $LSHW_IS_INSTALLED -ne 1 ] &&
+         [ "$ACTION_FLAG" = "H" ];
+      then
+        ACTION_FLAG=""
+      fi
+    done
+    setterm -cursor on 2>/dev/null
+    # -------------------------------------------------------------------------
+    # Installation des ausgewählten Paketes
+    # -------------------------------------------------------------------------
+    if [ "$ACTION_FLAG" = "I" ];
+    then
+      echo -e ""
+      ask_yes_or_no " Jetzt ${light_yellow}${RESULT_PACKS[$PACKAGE_NR]}${colors_off} installieren"
+      if [ $? -eq 1 ];
+      then
+        echo -e " OK, das Paket wird installiert - bitte warten ..."
+        # echo "apt install ${RESULT_PACKS[$PACKAGE_NR]}" # NUR ZUM TESTEN
+        apt install ${RESULT_PACKS[$PACKAGE_NR]}
+        echo -e ""
+        read -p " Zum weitermachen bitte Enter drücken: " DUMMY
+      fi
+      ACTION_FLAG="L"
+    fi
+    # -------------------------------------------------------------------------
+    # Entfernen des ausgewählten Paketes
+    # -------------------------------------------------------------------------
+    if [ "$ACTION_FLAG" = "D" ];
+    then
+      echo -e ""
+      ask_yes_or_no " Jetzt wirklich ${light_yellow}${RESULT_PACKS[$PACKAGE_NR]}${colors_off} entfernen"
+      if [ $? -eq 1 ];
+      then
+        echo -e " OK, das Paket wird entfernt - bitte warten ..."
+        # echo "apt purge ${RESULT_PACKS[$PACKAGE_NR]}" # NUR ZUM TESTEN
+        apt purge ${RESULT_PACKS[$PACKAGE_NR]}
+        echo -e ""
+        read -p " Zum weitermachen bitte Enter drücken: " DUMMY
+      fi
+      ACTION_FLAG="L"
+    fi
+    # -------------------------------------------------------------------------
+    # Anzeigen der Hardware
+    # -------------------------------------------------------------------------
+    if [ "$ACTION_FLAG" = "H" ];
+    then
+      show_hardware
+      echo -e ""
+      read -p " Zum weitermachen bitte Enter drücken: " DUMMY
+      ACTION_FLAG="L"
+    fi
+    # -------------------------------------------------------------------------
+    # Durchstarten mit Anzeige der bestehenden Liste
+    # -------------------------------------------------------------------------
+    if [ "$ACTION_FLAG" = "L" ];
+    then
+      show_headlines
+    fi
+  fi
+
+done
+
+# =============================================================================
+# Aufräumen
+# =============================================================================
+rm -f "$THE_LIST_FILE"
+echo -e ""
+echo -e "$FULL_LINE"
+echo -e " Auf Wiedersehen ..."
+echo -e "$FULL_LINE"
